@@ -54,6 +54,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 
 class MainActivity : ComponentActivity() {
@@ -140,7 +141,9 @@ class WorkflowRepository(private val app: Application) {
         val raw = storeFile.readText()
         if (raw.isBlank()) return@withContext emptyList()
 
-        runCatching { json.decodeFromString<List<Workflow>>(raw) }.getOrElse { emptyList() }
+        runCatching {
+            json.decodeFromString(ListSerializer(Workflow.serializer()), raw)
+        }.getOrElse { emptyList() }
     }
 
     suspend fun save(workflow: Workflow) = withContext(Dispatchers.IO) {
@@ -152,7 +155,9 @@ class WorkflowRepository(private val app: Application) {
             old.add(workflow)
         }
 
-        storeFile.writeText(json.encodeToString(old))
+        storeFile.writeText(
+            json.encodeToString(ListSerializer(Workflow.serializer()), old.toList())
+        )
     }
 }
 
