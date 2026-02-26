@@ -13,8 +13,6 @@ import android.os.Environment
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -61,7 +59,6 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewModelScope
-import androidx.documentfile.provider.DocumentFile
 import java.io.File
 import java.time.Instant
 import java.time.LocalDateTime
@@ -137,17 +134,10 @@ sealed class AtomicOperation {
 @Serializable
 @SerialName("delete_folder")
 data class DeleteFolderOperation(
-    val path: String? = null,
-    val treeUri: String? = null,
-    val displayName: String? = null
+    val path: String
 ) : AtomicOperation() {
     override fun displayText(): String {
-        return when {
-            !displayName.isNullOrBlank() -> "删除目录(授权): $displayName"
-            !treeUri.isNullOrBlank() -> "删除目录(授权): $treeUri"
-            !path.isNullOrBlank() -> "删除目录: $path"
-            else -> "删除目录: 未设置"
-        }
+        return "删除目录: $path"
     }
 }
 
@@ -259,18 +249,12 @@ class WorkflowExecutor(private val app: Application) {
     }
 
     private fun deleteFolder(operation: DeleteFolderOperation): ExecutionResult {
-        val treeUri = operation.treeUri
-        if (!treeUri.isNullOrBlank()) {
-            return deleteFolderSaf(treeUri)
-        }
-
         if (!hasAllFilesAccess()) {
             openAllFilesAccessSettings(app)
             return ExecutionResult(false, "删除目录失败: 请开启所有文件访问权限")
         }
 
         val path = operation.path
-            ?: return ExecutionResult(false, "删除目录失败: 未设置路径")
         val dir = File(path)
         if (!dir.exists()) return ExecutionResult(true, "删除目录: 跳过，目录不存在")
         if (!dir.isDirectory) return ExecutionResult(false, "删除目录失败: 目标不是目录")
@@ -280,28 +264,6 @@ class WorkflowExecutor(private val app: Application) {
         } else {
             ExecutionResult(false, "删除目录失败: $path")
         }
-    }
-
-    private fun deleteFolderSaf(treeUri: String): ExecutionResult {
-        val uri = Uri.parse(treeUri)
-        val doc = DocumentFile.fromTreeUri(app, uri)
-            ?: return ExecutionResult(false, "删除目录失败: 无法访问授权目录")
-        val ok = deleteDocumentFileRecursive(doc)
-        val name = doc.name ?: treeUri
-        return if (ok) {
-            ExecutionResult(true, "删除目录成功(授权): $name")
-        } else {
-            ExecutionResult(false, "删除目录失败(授权): $name")
-        }
-    }
-
-    private fun deleteDocumentFileRecursive(doc: DocumentFile): Boolean {
-        if (doc.isDirectory) {
-            for (child in doc.listFiles()) {
-                if (!deleteDocumentFileRecursive(child)) return false
-            }
-        }
-        return doc.delete()
     }
 
     private fun copyFolder(sourcePath: String, destinationPath: String): ExecutionResult {
@@ -628,7 +590,7 @@ private fun WorkflowListScreen(
                         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             Text("未开启所有文件访问权限", fontWeight = FontWeight.Bold)
                             Text(
-                                "若需要直接按路径删除外部目录，请先开启权限，或使用“目录授权”。",
+                                "若需要直接按路径删除外部目录，请先开启权限。",
                                 style = MaterialTheme.typography.bodySmall
                             )
                             OutlinedButton(onClick = onRequestAllFilesAccess) {
@@ -727,21 +689,7 @@ private fun CreateWorkflowScreen(
     var manualEpoch by remember { mutableStateOf("") }
     var appNameQuery by remember { mutableStateOf("") }
     var packageName by remember { mutableStateOf("") }
-    var deleteTreeUri by remember { mutableStateOf<String?>(null) }
-    var deleteTreeName by remember { mutableStateOf<String?>(null) }
-
-    val context = LocalContext.current
     val scroll = rememberScrollState()
-    val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
-        if (uri != null) {
-            val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            context.contentResolver.takePersistableUriPermission(uri, flags)
-            val doc = DocumentFile.fromTreeUri(context, uri)
-            deleteTreeUri = uri.toString()
-            deleteTreeName = doc?.name ?: uri.toString()
-            status = "已授权目录: ${deleteTreeName ?: uri}"
-        }
-    }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -800,33 +748,15 @@ private fun CreateWorkflowScreen(
                                 label = { Text("要删除的目录绝对路径") }
                             )
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                OutlinedButton(onClick = { folderPicker.launch(null) }) {
-                                    Text("选择目录授权")
-                                }
                                 if (!allFilesAccess) {
                                     OutlinedButton(onClick = onRequestAllFilesAccess) {
                                         Text("开启权限")
                                     }
                                 }
-                                if (deleteTreeUri != null) {
-                                    TextButton(onClick = {
-                                        deleteTreeUri = null
-                                        deleteTreeName = null
-                                        status = "已清除目录授权"
-                                    }) {
-                                        Text("清除授权")
-                                    }
-                                }
-                            }
-                            if (deleteTreeUri != null) {
-                                Text(
-                                    "已选目录: ${deleteTreeName ?: deleteTreeUri}",
-                                    style = MaterialTheme.typography.bodySmall
-                                )
                             }
                             if (!allFilesAccess) {
                                 Text(
-                                    "未开启所有文件访问权限时，路径删除仅限应用私有目录。可开启权限或使用目录授权。",
+                                    "未开启所有文件访问权限时，路径删除仅限应用私有目录。",
                                     style = MaterialTheme.typography.bodySmall
                                 )
                             }
@@ -911,14 +841,8 @@ private fun CreateWorkflowScreen(
                     Button(onClick = {
                         val op = when (selectedType) {
                         OperationType.DELETE -> {
-                            if (!deleteTreeUri.isNullOrBlank()) {
-                                DeleteFolderOperation(
-                                    path = null,
-                                    treeUri = deleteTreeUri,
-                                    displayName = deleteTreeName
-                                )
-                            } else if (deletePath.isBlank()) {
-                                status = "请输入删除目录路径或选择目录授权"
+                            if (deletePath.isBlank()) {
+                                status = "请输入删除目录路径"
                                 null
                             } else {
                                 DeleteFolderOperation(path = deletePath)
