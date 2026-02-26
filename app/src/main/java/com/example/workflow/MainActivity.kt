@@ -136,6 +136,11 @@ data class ExecutionResult(
     val message: String
 )
 
+data class InstalledApp(
+    val appName: String,
+    val packageName: String
+)
+
 class WorkflowRepository(private val app: Application) {
     private val json = Json {
         prettyPrint = true
@@ -312,8 +317,12 @@ class WorkflowViewModel(app: Application) : AndroidViewModel(app) {
     private val _logs = MutableStateFlow<List<String>>(emptyList())
     val logs: StateFlow<List<String>> = _logs.asStateFlow()
 
+    private val _installedApps = MutableStateFlow<List<InstalledApp>>(emptyList())
+    val installedApps: StateFlow<List<InstalledApp>> = _installedApps.asStateFlow()
+
     init {
         refresh()
+        loadInstalledApps()
     }
 
     fun refresh() {
@@ -399,6 +408,25 @@ class WorkflowViewModel(app: Application) : AndroidViewModel(app) {
     private fun appendLog(text: String) {
         _logs.value = (_logs.value + text).takeLast(100)
     }
+
+    fun loadInstalledApps() {
+        viewModelScope.launch {
+            _installedApps.value = withContext(Dispatchers.IO) {
+                val app = getApplication<Application>()
+                val pm = app.packageManager
+                val queryIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+                pm.queryIntentActivities(queryIntent, 0)
+                    .mapNotNull { resolveInfo ->
+                        val pkg = resolveInfo.activityInfo?.packageName ?: return@mapNotNull null
+                        val label = resolveInfo.loadLabel(pm)?.toString()?.trim().orEmpty()
+                        if (label.isBlank()) return@mapNotNull null
+                        InstalledApp(appName = label, packageName = pkg)
+                    }
+                    .distinctBy { it.packageName }
+                    .sortedBy { it.appName.lowercase() }
+            }
+        }
+    }
 }
 
 enum class OperationType(val title: String) {
@@ -412,6 +440,7 @@ enum class OperationType(val title: String) {
 private fun WorkflowApp(vm: WorkflowViewModel) {
     val workflows by vm.workflows.collectAsState()
     val logs by vm.logs.collectAsState()
+    val installedApps by vm.installedApps.collectAsState()
     val context = LocalContext.current
     val activity = context as? ComponentActivity
 
@@ -435,6 +464,7 @@ private fun WorkflowApp(vm: WorkflowViewModel) {
 
     if (creatorMode) {
         CreateWorkflowScreen(
+            installedApps = installedApps,
             onBack = { creatorMode = false },
             onSave = { name, operations, onResult ->
                 vm.saveWorkflow(name, operations) { ok, msg ->
@@ -527,6 +557,7 @@ private fun WorkflowListScreen(
 
 @Composable
 private fun CreateWorkflowScreen(
+    installedApps: List<InstalledApp>,
     onBack: () -> Unit,
     onSave: (String, List<AtomicOperation>, (Boolean, String) -> Unit) -> Unit
 ) {
@@ -541,6 +572,7 @@ private fun CreateWorkflowScreen(
     var copyTarget by remember { mutableStateOf("") }
     var autoTime by remember { mutableStateOf(true) }
     var manualEpoch by remember { mutableStateOf("") }
+    var appNameQuery by remember { mutableStateOf("") }
     var packageName by remember { mutableStateOf("") }
 
     val scroll = rememberScrollState()
@@ -620,6 +652,38 @@ private fun CreateWorkflowScreen(
                 }
 
                 OperationType.OPEN_APP -> {
+                    OutlinedTextField(
+                        value = appNameQuery,
+                        onValueChange = { appNameQuery = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("按应用名搜索（如 微信）") }
+                    )
+                    val filteredApps = remember(appNameQuery, installedApps) {
+                        val q = appNameQuery.trim()
+                        if (q.isBlank()) {
+                            installedApps.take(8)
+                        } else {
+                            installedApps.filter { it.appName.contains(q, ignoreCase = true) }.take(8)
+                        }
+                    }
+                    if (filteredApps.isNotEmpty()) {
+                        Card(modifier = Modifier.fillMaxWidth()) {
+                            Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                filteredApps.forEach { app ->
+                                    TextButton(
+                                        onClick = {
+                                            packageName = app.packageName
+                                            appNameQuery = app.appName
+                                            status = "已选择应用: ${app.appName}"
+                                        },
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text("${app.appName} (${app.packageName})")
+                                    }
+                                }
+                            }
+                        }
+                    }
                     OutlinedTextField(
                         value = packageName,
                         onValueChange = { packageName = it },
