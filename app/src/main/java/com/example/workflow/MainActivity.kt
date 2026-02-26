@@ -11,6 +11,8 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
+import android.app.DatePickerDialog
+import android.app.TimePickerDialog
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
@@ -62,7 +64,10 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewModelScope
 import java.io.File
 import java.time.Instant
+import java.time.LocalDate
 import java.time.LocalDateTime
+import java.time.LocalTime
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
@@ -687,7 +692,6 @@ private fun CreateWorkflowScreen(
     var copySource by remember { mutableStateOf("") }
     var copyTarget by remember { mutableStateOf("") }
     var autoTime by remember { mutableStateOf(true) }
-    var manualEpoch by remember { mutableStateOf("") }
     var appNameQuery by remember { mutableStateOf("") }
     var packageName by remember { mutableStateOf("") }
     var showDeletePicker by remember { mutableStateOf(false) }
@@ -696,6 +700,12 @@ private fun CreateWorkflowScreen(
 
     val context = LocalContext.current
     val scroll = rememberScrollState()
+    val initialDateTime = remember { LocalDateTime.now().withSecond(0).withNano(0) }
+    var selectedDate by remember { mutableStateOf(initialDateTime.toLocalDate()) }
+    var selectedTime by remember { mutableStateOf(initialDateTime.toLocalTime()) }
+    val dateFormatter = remember { DateTimeFormatter.ofPattern("yyyy-MM-dd") }
+    val timeFormatter = remember { DateTimeFormatter.ofPattern("HH:mm") }
+    val displayFormatter = remember { DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm") }
     val basePickerDir = remember(allFilesAccess) {
         if (allFilesAccess) {
             Environment.getExternalStorageDirectory()
@@ -818,11 +828,65 @@ private fun CreateWorkflowScreen(
                                 Text("自动设置系统时间")
                             }
                             if (!autoTime) {
-                                OutlinedTextField(
-                                    value = manualEpoch,
-                                    onValueChange = { manualEpoch = it },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    label = { Text("目标时间 epochMillis (毫秒)") }
+                                val selectedDateTime = LocalDateTime.of(selectedDate, selectedTime)
+                                val selectedEpoch = selectedDateTime.atZone(ZoneId.systemDefault())
+                                    .toInstant()
+                                    .toEpochMilli()
+
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedButton(onClick = {
+                                        val now = LocalDateTime.now().withSecond(0).withNano(0)
+                                        selectedDate = now.toLocalDate()
+                                        selectedTime = now.toLocalTime()
+                                        status = "已设置为当前时间"
+                                    }) {
+                                        Text("设为当前时间")
+                                    }
+                                }
+
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedButton(onClick = {
+                                        val d = selectedDate
+                                        DatePickerDialog(
+                                            context,
+                                            { _, year, month, day ->
+                                                selectedDate = LocalDate.of(year, month + 1, day)
+                                            },
+                                            d.year,
+                                            d.monthValue - 1,
+                                            d.dayOfMonth
+                                        ).show()
+                                    }) {
+                                        Text("选择日期")
+                                    }
+                                    Text(selectedDate.format(dateFormatter))
+                                }
+
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedButton(onClick = {
+                                        val t = selectedTime
+                                        TimePickerDialog(
+                                            context,
+                                            { _, hour, minute ->
+                                                selectedTime = LocalTime.of(hour, minute)
+                                            },
+                                            t.hour,
+                                            t.minute,
+                                            true
+                                        ).show()
+                                    }) {
+                                        Text("选择时间")
+                                    }
+                                    Text(selectedTime.format(timeFormatter))
+                                }
+
+                                Text(
+                                    "已选时间: ${selectedDateTime.format(displayFormatter)}",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                Text(
+                                    "epochMillis: $selectedEpoch",
+                                    style = MaterialTheme.typography.bodySmall
                                 )
                             }
                         }
@@ -889,19 +953,17 @@ private fun CreateWorkflowScreen(
                                 }
                             }
 
-                            OperationType.SET_TIME -> {
-                                if (autoTime) {
-                                    SetSystemTimeOperation(auto = true)
-                                } else {
-                                    val ms = manualEpoch.toLongOrNull()
-                                    if (ms == null) {
-                                        status = "epochMillis 必须是数字"
-                                        null
-                                    } else {
-                                        SetSystemTimeOperation(auto = false, epochMillis = ms)
-                                    }
-                                }
+                        OperationType.SET_TIME -> {
+                            if (autoTime) {
+                                SetSystemTimeOperation(auto = true)
+                            } else {
+                                val selectedDateTime = LocalDateTime.of(selectedDate, selectedTime)
+                                val ms = selectedDateTime.atZone(ZoneId.systemDefault())
+                                    .toInstant()
+                                    .toEpochMilli()
+                                SetSystemTimeOperation(auto = false, epochMillis = ms)
                             }
+                        }
 
                             OperationType.OPEN_APP -> {
                                 if (packageName.isBlank()) {
