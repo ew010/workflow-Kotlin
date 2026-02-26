@@ -32,6 +32,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Divider
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
@@ -689,7 +690,24 @@ private fun CreateWorkflowScreen(
     var manualEpoch by remember { mutableStateOf("") }
     var appNameQuery by remember { mutableStateOf("") }
     var packageName by remember { mutableStateOf("") }
+    var showDeletePicker by remember { mutableStateOf(false) }
+    var showCopySourcePicker by remember { mutableStateOf(false) }
+    var showCopyTargetPicker by remember { mutableStateOf(false) }
+
+    val context = LocalContext.current
     val scroll = rememberScrollState()
+    val basePickerDir = remember(allFilesAccess) {
+        if (allFilesAccess) {
+            Environment.getExternalStorageDirectory()
+        } else {
+            context.filesDir
+        }
+    }
+
+    fun resolveStartDir(path: String): File {
+        val candidate = File(path)
+        return if (candidate.exists() && candidate.isDirectory) candidate else basePickerDir
+    }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -748,6 +766,9 @@ private fun CreateWorkflowScreen(
                                 label = { Text("要删除的目录绝对路径") }
                             )
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(onClick = { showDeletePicker = true }) {
+                                    Text("选择目录")
+                                }
                                 if (!allFilesAccess) {
                                     OutlinedButton(onClick = onRequestAllFilesAccess) {
                                         Text("开启权限")
@@ -769,12 +790,22 @@ private fun CreateWorkflowScreen(
                                 modifier = Modifier.fillMaxWidth(),
                                 label = { Text("源目录绝对路径") }
                             )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(onClick = { showCopySourcePicker = true }) {
+                                    Text("选择源目录")
+                                }
+                            }
                             OutlinedTextField(
                                 value = copyTarget,
                                 onValueChange = { copyTarget = it },
                                 modifier = Modifier.fillMaxWidth(),
                                 label = { Text("目标目录绝对路径") }
                             )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(onClick = { showCopyTargetPicker = true }) {
+                                    Text("选择目标目录")
+                                }
+                            }
                         }
 
                         OperationType.SET_TIME -> {
@@ -942,6 +973,39 @@ private fun CreateWorkflowScreen(
             }
         }
     }
+
+    DirectoryPickerDialog(
+        visible = showDeletePicker,
+        title = "选择要删除的目录",
+        startDir = resolveStartDir(deletePath),
+        onSelect = { path ->
+            deletePath = path
+            status = "已选择目录: $path"
+        },
+        onDismiss = { showDeletePicker = false }
+    )
+
+    DirectoryPickerDialog(
+        visible = showCopySourcePicker,
+        title = "选择源目录",
+        startDir = resolveStartDir(copySource),
+        onSelect = { path ->
+            copySource = path
+            status = "已选择源目录: $path"
+        },
+        onDismiss = { showCopySourcePicker = false }
+    )
+
+    DirectoryPickerDialog(
+        visible = showCopyTargetPicker,
+        title = "选择目标目录",
+        startDir = resolveStartDir(copyTarget),
+        onSelect = { path ->
+            copyTarget = path
+            status = "已选择目标目录: $path"
+        },
+        onDismiss = { showCopyTargetPicker = false }
+    )
 }
 
 @Composable
@@ -956,4 +1020,72 @@ private fun StatusBanner(text: String) {
             Text(text, style = MaterialTheme.typography.bodySmall)
         }
     }
+}
+
+@Composable
+private fun DirectoryPickerDialog(
+    visible: Boolean,
+    title: String,
+    startDir: File,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    if (!visible) return
+
+    var currentDir by remember(startDir) { mutableStateOf(startDir) }
+    val dirs = remember(currentDir) {
+        currentDir.listFiles()
+            ?.filter { it.isDirectory }
+            ?.sortedBy { it.name.lowercase() }
+            .orEmpty()
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(currentDir.path, style = MaterialTheme.typography.bodySmall)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val parent = currentDir.parentFile
+                    OutlinedButton(
+                        onClick = { if (parent != null) currentDir = parent },
+                        enabled = parent != null
+                    ) {
+                        Text("上一级")
+                    }
+                }
+                if (dirs.isEmpty()) {
+                    Text("当前目录无子目录", style = MaterialTheme.typography.bodySmall)
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.heightIn(max = 240.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        items(dirs) { dir ->
+                            TextButton(
+                                onClick = { currentDir = dir },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(dir.name)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                onSelect(currentDir.path)
+                onDismiss()
+            }) {
+                Text("选择此目录")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        }
+    )
 }
