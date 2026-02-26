@@ -1,0 +1,630 @@
+package com.example.workflow
+
+import android.app.Application
+import android.content.Intent
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.Divider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.viewModelScope
+import java.io.File
+import java.time.Instant
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
+import java.util.UUID
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            MaterialTheme {
+                val vm: WorkflowViewModel = viewModel()
+                WorkflowApp(vm)
+            }
+        }
+    }
+}
+
+@Serializable
+data class Workflow(
+    val id: String,
+    val name: String,
+    val operations: List<AtomicOperation>
+)
+
+@Serializable
+sealed class AtomicOperation {
+    abstract fun displayText(): String
+}
+
+@Serializable
+@SerialName("delete_folder")
+data class DeleteFolderOperation(val path: String) : AtomicOperation() {
+    override fun displayText(): String = "删除目录: $path"
+}
+
+@Serializable
+@SerialName("copy_folder")
+data class CopyFolderOperation(
+    val sourcePath: String,
+    val destinationPath: String
+) : AtomicOperation() {
+    override fun displayText(): String = "复制目录: $sourcePath -> $destinationPath"
+}
+
+@Serializable
+@SerialName("set_system_time")
+data class SetSystemTimeOperation(
+    val auto: Boolean,
+    val epochMillis: Long? = null
+) : AtomicOperation() {
+    override fun displayText(): String {
+        return if (auto) {
+            "系统时间: 自动设置"
+        } else {
+            "系统时间: 手动设置为 ${epochMillis ?: "(空)"}"
+        }
+    }
+}
+
+@Serializable
+@SerialName("open_app")
+data class OpenAppOperation(val packageName: String) : AtomicOperation() {
+    override fun displayText(): String = "打开 APP: $packageName"
+}
+
+data class ExecutionResult(
+    val success: Boolean,
+    val message: String
+)
+
+class WorkflowRepository(private val app: Application) {
+    private val json = Json {
+        prettyPrint = true
+        ignoreUnknownKeys = true
+        classDiscriminator = "type"
+    }
+
+    private val storeFile: File
+        get() = File(app.filesDir, "workflows.json")
+
+    suspend fun loadAll(): List<Workflow> = withContext(Dispatchers.IO) {
+        if (!storeFile.exists()) {
+            storeFile.writeText("[]")
+            return@withContext emptyList()
+        }
+
+        val raw = storeFile.readText()
+        if (raw.isBlank()) return@withContext emptyList()
+
+        runCatching { json.decodeFromString<List<Workflow>>(raw) }.getOrElse { emptyList() }
+    }
+
+    suspend fun save(workflow: Workflow) = withContext(Dispatchers.IO) {
+        val old = loadAll().toMutableList()
+        val idx = old.indexOfFirst { it.id == workflow.id }
+        if (idx >= 0) {
+            old[idx] = workflow
+        } else {
+            old.add(workflow)
+        }
+
+        storeFile.writeText(json.encodeToString(old))
+    }
+}
+
+class WorkflowExecutor(private val app: Application) {
+
+    suspend fun execute(workflow: Workflow): List<ExecutionResult> {
+        val results = mutableListOf<ExecutionResult>()
+
+        for ((index, op) in workflow.operations.withIndex()) {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { runOperation(op) }
+                    .getOrElse { ExecutionResult(false, "步骤${index + 1}异常: ${it.message}") }
+            }
+            results.add(result)
+            if (!result.success) {
+                break
+            }
+        }
+
+        return results
+    }
+
+    private fun runOperation(operation: AtomicOperation): ExecutionResult {
+        return when (operation) {
+            is DeleteFolderOperation -> deleteFolder(operation.path)
+            is CopyFolderOperation -> copyFolder(operation.sourcePath, operation.destinationPath)
+            is SetSystemTimeOperation -> setSystemTime(operation)
+            is OpenAppOperation -> openApp(operation.packageName)
+        }
+    }
+
+    private fun deleteFolder(path: String): ExecutionResult {
+        val dir = File(path)
+        if (!dir.exists()) return ExecutionResult(true, "删除目录: 跳过，目录不存在")
+        if (!dir.isDirectory) return ExecutionResult(false, "删除目录失败: 目标不是目录")
+
+        return if (dir.deleteRecursively()) {
+            ExecutionResult(true, "删除目录成功: $path")
+        } else {
+            ExecutionResult(false, "删除目录失败: $path")
+        }
+    }
+
+    private fun copyFolder(sourcePath: String, destinationPath: String): ExecutionResult {
+        val src = File(sourcePath)
+        if (!src.exists() || !src.isDirectory) {
+            return ExecutionResult(false, "复制失败: 源目录不存在或不是目录")
+        }
+
+        val dest = File(destinationPath)
+        val ok = copyDirectoryRecursive(src, dest)
+        return if (ok) {
+            ExecutionResult(true, "复制目录成功: $sourcePath -> $destinationPath")
+        } else {
+            ExecutionResult(false, "复制目录失败: $sourcePath -> $destinationPath")
+        }
+    }
+
+    private fun copyDirectoryRecursive(src: File, dest: File): Boolean {
+        if (!dest.exists() && !dest.mkdirs()) {
+            return false
+        }
+
+        src.listFiles()?.forEach { file ->
+            val target = File(dest, file.name)
+            if (file.isDirectory) {
+                if (!copyDirectoryRecursive(file, target)) return false
+            } else {
+                if (!runCatching {
+                        file.inputStream().use { input ->
+                            target.outputStream().use { output ->
+                                input.copyTo(output)
+                            }
+                        }
+                    }.isSuccess
+                ) {
+                    return false
+                }
+            }
+        }
+        return true
+    }
+
+    private fun setSystemTime(op: SetSystemTimeOperation): ExecutionResult {
+        return if (op.auto) {
+            val autoCmd = runShellAsRoot("settings put global auto_time 1")
+            if (autoCmd) {
+                ExecutionResult(true, "系统时间已设置为自动")
+            } else {
+                // Android 普通应用无法直接改系统时间，此处回退到系统设置页。
+                val intent = Intent(android.provider.Settings.ACTION_DATE_SETTINGS)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                app.startActivity(intent)
+                ExecutionResult(false, "无系统权限，已打开日期设置页面，请手动开启自动时间")
+            }
+        } else {
+            val ms = op.epochMillis
+                ?: return ExecutionResult(false, "设置时间失败: epochMillis 不能为空")
+            val seconds = ms / 1000
+            val disableAuto = runShellAsRoot("settings put global auto_time 0")
+            val setTime = runShellAsRoot("date -s @$seconds")
+            if (disableAuto && setTime) {
+                ExecutionResult(true, "系统时间已设置为 ${Instant.ofEpochMilli(ms)}")
+            } else {
+                val intent = Intent(android.provider.Settings.ACTION_DATE_SETTINGS)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                app.startActivity(intent)
+                ExecutionResult(false, "无系统权限，已打开日期设置页面，请手动设置时间")
+            }
+        }
+    }
+
+    private fun openApp(packageName: String): ExecutionResult {
+        val launchIntent = app.packageManager.getLaunchIntentForPackage(packageName)
+            ?: return ExecutionResult(false, "打开 APP 失败: 找不到包名 $packageName")
+
+        launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        app.startActivity(launchIntent)
+        return ExecutionResult(true, "打开 APP 成功: $packageName")
+    }
+
+    private fun runShellAsRoot(command: String): Boolean {
+        return runCatching {
+            val process = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
+            val code = process.waitFor()
+            code == 0
+        }.getOrDefault(false)
+    }
+}
+
+class WorkflowViewModel(app: Application) : AndroidViewModel(app) {
+    private val repository = WorkflowRepository(app)
+    private val executor = WorkflowExecutor(app)
+
+    private val _workflows = MutableStateFlow<List<Workflow>>(emptyList())
+    val workflows: StateFlow<List<Workflow>> = _workflows.asStateFlow()
+
+    private val _logs = MutableStateFlow<List<String>>(emptyList())
+    val logs: StateFlow<List<String>> = _logs.asStateFlow()
+
+    init {
+        refresh()
+    }
+
+    fun refresh() {
+        viewModelScope.launch {
+            _workflows.value = repository.loadAll()
+        }
+    }
+
+    fun saveWorkflow(name: String, operations: List<AtomicOperation>, onDone: (Boolean, String) -> Unit) {
+        viewModelScope.launch {
+            if (name.isBlank()) {
+                onDone(false, "工作流名称不能为空")
+                return@launch
+            }
+            if (operations.isEmpty()) {
+                onDone(false, "至少添加一个原子操作")
+                return@launch
+            }
+
+            val workflow = Workflow(
+                id = UUID.randomUUID().toString(),
+                name = name,
+                operations = operations
+            )
+            repository.save(workflow)
+            refresh()
+            onDone(true, "工作流已保存")
+        }
+    }
+
+    fun runWorkflow(workflow: Workflow) {
+        viewModelScope.launch {
+            val time = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
+            appendLog("[$time] 开始执行: ${workflow.name}")
+            val results = executor.execute(workflow)
+            results.forEach { result ->
+                appendLog("  - ${if (result.success) "OK" else "FAIL"}: ${result.message}")
+            }
+            appendLog("[$time] 执行结束: ${workflow.name}")
+        }
+    }
+
+    private fun appendLog(text: String) {
+        _logs.value = (_logs.value + text).takeLast(100)
+    }
+}
+
+enum class OperationType(val title: String) {
+    DELETE("删除文件夹"),
+    COPY("复制文件夹"),
+    SET_TIME("设置系统时间"),
+    OPEN_APP("打开 App")
+}
+
+@Composable
+private fun WorkflowApp(vm: WorkflowViewModel) {
+    val workflows by vm.workflows.collectAsState()
+    val logs by vm.logs.collectAsState()
+
+    var creatorMode by remember { mutableStateOf(false) }
+
+    if (creatorMode) {
+        CreateWorkflowScreen(
+            onBack = { creatorMode = false },
+            onSave = { name, operations, onResult ->
+                vm.saveWorkflow(name, operations) { ok, msg ->
+                    onResult(ok, msg)
+                    if (ok) creatorMode = false
+                }
+            }
+        )
+    } else {
+        WorkflowListScreen(
+            workflows = workflows,
+            logs = logs,
+            onRefresh = vm::refresh,
+            onRun = vm::runWorkflow,
+            onCreate = { creatorMode = true }
+        )
+    }
+}
+
+@Composable
+private fun WorkflowListScreen(
+    workflows: List<Workflow>,
+    logs: List<String>,
+    onRefresh: () -> Unit,
+    onRun: (Workflow) -> Unit,
+    onCreate: () -> Unit
+) {
+    Scaffold(modifier = Modifier.fillMaxSize()) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onCreate) { Text("新建工作流") }
+                OutlinedButton(onClick = onRefresh) { Text("刷新") }
+            }
+
+            Text("已保存工作流", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+
+            if (workflows.isEmpty()) {
+                Text("暂无工作流，点击“新建工作流”创建")
+            } else {
+                LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(workflows, key = { it.id }) { wf ->
+                        Card(modifier = Modifier.fillMaxWidth()) {
+                            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(wf.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                                wf.operations.forEachIndexed { index, op ->
+                                    Text("${index + 1}. ${op.displayText()}")
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(onClick = { onRun(wf) }) {
+                                        Text("执行")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Divider()
+            Text("执行日志", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            LazyColumn(modifier = Modifier.height(180.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                items(logs) { line ->
+                    Text(line, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CreateWorkflowScreen(
+    onBack: () -> Unit,
+    onSave: (String, List<AtomicOperation>, (Boolean, String) -> Unit) -> Unit
+) {
+    var workflowName by remember { mutableStateOf("") }
+    var selectedType by remember { mutableStateOf(OperationType.DELETE) }
+    var status by remember { mutableStateOf("") }
+
+    val operations = remember { mutableStateListOf<AtomicOperation>() }
+
+    var deletePath by remember { mutableStateOf("") }
+    var copySource by remember { mutableStateOf("") }
+    var copyTarget by remember { mutableStateOf("") }
+    var autoTime by remember { mutableStateOf(true) }
+    var manualEpoch by remember { mutableStateOf("") }
+    var packageName by remember { mutableStateOf("") }
+
+    val scroll = rememberScrollState()
+
+    Scaffold(modifier = Modifier.fillMaxSize()) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(12.dp)
+                .verticalScroll(scroll),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = onBack) { Text("返回") }
+                Text("创建工作流", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            }
+
+            OutlinedTextField(
+                value = workflowName,
+                onValueChange = { workflowName = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("工作流名称") }
+            )
+
+            Text("选择原子操作类型")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OperationType.entries.forEach { type ->
+                    OutlinedButton(onClick = { selectedType = type }) {
+                        Text(if (selectedType == type) "* ${type.title}" else type.title)
+                    }
+                }
+            }
+
+            when (selectedType) {
+                OperationType.DELETE -> {
+                    OutlinedTextField(
+                        value = deletePath,
+                        onValueChange = { deletePath = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("要删除的目录绝对路径") }
+                    )
+                }
+
+                OperationType.COPY -> {
+                    OutlinedTextField(
+                        value = copySource,
+                        onValueChange = { copySource = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("源目录绝对路径") }
+                    )
+                    OutlinedTextField(
+                        value = copyTarget,
+                        onValueChange = { copyTarget = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("目标目录绝对路径") }
+                    )
+                }
+
+                OperationType.SET_TIME -> {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Checkbox(
+                            checked = autoTime,
+                            onCheckedChange = { autoTime = it },
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Text("自动设置系统时间")
+                    }
+                    if (!autoTime) {
+                        OutlinedTextField(
+                            value = manualEpoch,
+                            onValueChange = { manualEpoch = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("目标时间 epochMillis (毫秒)") }
+                        )
+                    }
+                }
+
+                OperationType.OPEN_APP -> {
+                    OutlinedTextField(
+                        value = packageName,
+                        onValueChange = { packageName = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("App 包名（如 com.android.settings）") }
+                    )
+                }
+            }
+
+            Button(onClick = {
+                val op = when (selectedType) {
+                    OperationType.DELETE -> {
+                        if (deletePath.isBlank()) {
+                            status = "请输入删除目录路径"
+                            null
+                        } else {
+                            DeleteFolderOperation(deletePath)
+                        }
+                    }
+
+                    OperationType.COPY -> {
+                        if (copySource.isBlank() || copyTarget.isBlank()) {
+                            status = "请输入复制源路径和目标路径"
+                            null
+                        } else {
+                            CopyFolderOperation(copySource, copyTarget)
+                        }
+                    }
+
+                    OperationType.SET_TIME -> {
+                        if (autoTime) {
+                            SetSystemTimeOperation(auto = true)
+                        } else {
+                            val ms = manualEpoch.toLongOrNull()
+                            if (ms == null) {
+                                status = "epochMillis 必须是数字"
+                                null
+                            } else {
+                                SetSystemTimeOperation(auto = false, epochMillis = ms)
+                            }
+                        }
+                    }
+
+                    OperationType.OPEN_APP -> {
+                        if (packageName.isBlank()) {
+                            status = "请输入包名"
+                            null
+                        } else {
+                            OpenAppOperation(packageName)
+                        }
+                    }
+                }
+
+                if (op != null) {
+                    operations.add(op)
+                    status = "已添加操作: ${op.displayText()}"
+                }
+            }) {
+                Text("添加操作")
+            }
+
+            if (operations.isNotEmpty()) {
+                Text("当前操作列表", fontWeight = FontWeight.Bold)
+                operations.forEachIndexed { index, operation ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("${index + 1}. ${operation.displayText()}", modifier = Modifier.width(280.dp))
+                        TextButton(onClick = { operations.removeAt(index) }) {
+                            Text("删除")
+                        }
+                    }
+                }
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = {
+                    onSave(workflowName, operations.toList()) { _, msg ->
+                        status = msg
+                    }
+                }) {
+                    Text("保存工作流")
+                }
+                OutlinedButton(onClick = onBack) {
+                    Text("取消")
+                }
+            }
+
+            if (status.isNotBlank()) {
+                Text(status)
+            }
+
+            Text(
+                "说明: 修改系统时间属于高权限行为。普通 App 通常只能跳转到系统日期设置页，Root/设备所有者模式下可自动执行。",
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+    }
+}

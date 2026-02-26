@@ -1,0 +1,37 @@
+# Android Workflow Tool (Kotlin)
+
+一个可在安卓手机执行的工作流工具，支持以下原子操作：
+
+1. 删除指定文件夹
+2. 复制指定文件夹到指定位置
+3. 设置系统时间（自动时间 / 指定时间）
+4. 打开指定 App
+
+工作流可保存后重复执行。
+
+## 项目结构
+
+- `app/src/main/java/com/example/workflow/MainActivity.kt`：核心实现（模型、执行器、持久化、UI）
+- `.github/workflows/android.yml`：GitHub Actions 构建与发布
+
+## 使用说明
+
+1. 打开 App，点击“新建工作流”
+2. 输入工作流名称
+3. 选择原子操作类型并填写参数，点击“添加操作”
+4. 可连续添加多个操作
+5. 点击“保存工作流”
+6. 回到列表后点击“执行”
+
+## 权限与限制
+
+- 文件操作仅对应用有权限访问的目录生效（受 Android 存储沙箱限制）。
+- “修改系统时间”属于高权限能力：
+  - Root 或设备所有者（Device Owner）环境下可自动执行；
+  - 普通应用会回退为打开系统日期设置页，让用户手动设置。
+
+## GitHub Actions
+
+- Push 到 `main/master`：自动构建 `debug APK` 并上传 artifact。
+- Push tag（如 `v1.0.0`）：自动创建 GitHub Release，并附带 `app-debug.apk`。
+
