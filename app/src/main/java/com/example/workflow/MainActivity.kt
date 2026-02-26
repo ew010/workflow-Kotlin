@@ -1,6 +1,7 @@
 package com.example.workflow
 
 import android.app.Application
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ShortcutInfo
 import android.content.pm.ShortcutManager
@@ -8,6 +9,8 @@ import android.graphics.drawable.Icon
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -40,6 +43,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -52,6 +56,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewModelScope
 import androidx.documentfile.provider.DocumentFile
@@ -88,6 +95,30 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+    }
+}
+
+private fun hasAllFilesAccess(): Boolean {
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        Environment.isExternalStorageManager()
+    } else {
+        true
+    }
+}
+
+private fun openAllFilesAccessSettings(context: Context) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+    val intent = Intent(
+        Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+        Uri.parse("package:${context.packageName}")
+    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    if (intent.resolveActivity(context.packageManager) != null) {
+        context.startActivity(intent)
+    } else {
+        context.startActivity(
+            Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
     }
 }
 
@@ -231,6 +262,11 @@ class WorkflowExecutor(private val app: Application) {
         val treeUri = operation.treeUri
         if (!treeUri.isNullOrBlank()) {
             return deleteFolderSaf(treeUri)
+        }
+
+        if (!hasAllFilesAccess()) {
+            openAllFilesAccessSettings(app)
+            return ExecutionResult(false, "删除目录失败: 请开启所有文件访问权限")
         }
 
         val path = operation.path
@@ -491,10 +527,22 @@ private fun WorkflowApp(vm: WorkflowViewModel) {
     val installedApps by vm.installedApps.collectAsState()
     val context = LocalContext.current
     val activity = context as? ComponentActivity
+    val lifecycleOwner = LocalLifecycleOwner.current
 
     var creatorMode by remember { mutableStateOf(false) }
     var handledShortcutSignature by remember { mutableStateOf<String?>(null) }
     var listStatus by remember { mutableStateOf("") }
+    var allFilesAccess by remember { mutableStateOf(hasAllFilesAccess()) }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                allFilesAccess = hasAllFilesAccess()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     LaunchedEffect(workflows.size, activity?.intent?.action, activity?.intent?.getStringExtra(EXTRA_WORKFLOW_ID)) {
         val intent = activity?.intent ?: return@LaunchedEffect
@@ -513,6 +561,8 @@ private fun WorkflowApp(vm: WorkflowViewModel) {
     if (creatorMode) {
         CreateWorkflowScreen(
             installedApps = installedApps,
+            allFilesAccess = allFilesAccess,
+            onRequestAllFilesAccess = { openAllFilesAccessSettings(context) },
             onBack = { creatorMode = false },
             onSave = { name, operations, onResult ->
                 vm.saveWorkflow(name, operations) { ok, msg ->
@@ -526,6 +576,8 @@ private fun WorkflowApp(vm: WorkflowViewModel) {
             workflows = workflows,
             logs = logs,
             status = listStatus,
+            allFilesAccess = allFilesAccess,
+            onRequestAllFilesAccess = { openAllFilesAccessSettings(context) },
             onRefresh = vm::refresh,
             onRun = vm::runWorkflow,
             onPin = { workflow ->
@@ -544,6 +596,8 @@ private fun WorkflowListScreen(
     workflows: List<Workflow>,
     logs: List<String>,
     status: String,
+    allFilesAccess: Boolean,
+    onRequestAllFilesAccess: () -> Unit,
     onRefresh: () -> Unit,
     onRun: (Workflow) -> Unit,
     onPin: (Workflow) -> Unit,
@@ -568,6 +622,23 @@ private fun WorkflowListScreen(
                 .padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            if (!allFilesAccess) {
+                item {
+                    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("未开启所有文件访问权限", fontWeight = FontWeight.Bold)
+                            Text(
+                                "若需要直接按路径删除外部目录，请先开启权限，或使用“目录授权”。",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            OutlinedButton(onClick = onRequestAllFilesAccess) {
+                                Text("开启权限")
+                            }
+                        }
+                    }
+                }
+            }
+
             item {
                 SectionHeader("已保存工作流")
             }
@@ -638,6 +709,8 @@ private fun WorkflowListScreen(
 @Composable
 private fun CreateWorkflowScreen(
     installedApps: List<InstalledApp>,
+    allFilesAccess: Boolean,
+    onRequestAllFilesAccess: () -> Unit,
     onBack: () -> Unit,
     onSave: (String, List<AtomicOperation>, (Boolean, String) -> Unit) -> Unit
 ) {
@@ -730,6 +803,11 @@ private fun CreateWorkflowScreen(
                                 OutlinedButton(onClick = { folderPicker.launch(null) }) {
                                     Text("选择目录授权")
                                 }
+                                if (!allFilesAccess) {
+                                    OutlinedButton(onClick = onRequestAllFilesAccess) {
+                                        Text("开启权限")
+                                    }
+                                }
                                 if (deleteTreeUri != null) {
                                     TextButton(onClick = {
                                         deleteTreeUri = null
@@ -743,6 +821,12 @@ private fun CreateWorkflowScreen(
                             if (deleteTreeUri != null) {
                                 Text(
                                     "已选目录: ${deleteTreeName ?: deleteTreeUri}",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                            if (!allFilesAccess) {
+                                Text(
+                                    "未开启所有文件访问权限时，路径删除仅限应用私有目录。可开启权限或使用目录授权。",
                                     style = MaterialTheme.typography.bodySmall
                                 )
                             }
