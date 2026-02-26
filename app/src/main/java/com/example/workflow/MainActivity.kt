@@ -14,22 +14,25 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Divider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -500,40 +503,52 @@ private fun WorkflowListScreen(
     onPin: (Workflow) -> Unit,
     onCreate: () -> Unit
 ) {
-    Scaffold(modifier = Modifier.fillMaxSize()) { padding ->
-        Column(
+    Scaffold(
+        modifier = Modifier.fillMaxSize(),
+        topBar = {
+            TopAppBar(
+                title = { Text("工作流") },
+                actions = {
+                    TextButton(onClick = onRefresh) { Text("刷新") }
+                    TextButton(onClick = onCreate) { Text("新建") }
+                }
+            )
+        }
+    ) { padding ->
+        LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
                 .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onCreate) { Text("新建工作流") }
-                OutlinedButton(onClick = onRefresh) { Text("刷新") }
+            item {
+                SectionHeader("已保存工作流")
             }
 
-            Text("已保存工作流", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-
             if (workflows.isEmpty()) {
-                Text("暂无工作流，点击“新建工作流”创建")
+                item {
+                    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text("暂无工作流", fontWeight = FontWeight.Bold)
+                            Text("点击右上角“新建”创建", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
             } else {
-                LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(workflows, key = { it.id }) { wf ->
-                        Card(modifier = Modifier.fillMaxWidth()) {
-                            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Text(wf.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                                wf.operations.forEachIndexed { index, op ->
-                                    Text("${index + 1}. ${op.displayText()}")
-                                }
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Button(onClick = { onRun(wf) }) {
-                                        Text("执行")
-                                    }
-                                    OutlinedButton(onClick = { onPin(wf) }) {
-                                        Text("加到桌面")
-                                    }
-                                }
+                items(workflows, key = { it.id }) { wf ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors()
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(wf.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                            wf.operations.forEachIndexed { index, op ->
+                                Text("${index + 1}. ${op.displayText()}", style = MaterialTheme.typography.bodySmall)
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(onClick = { onRun(wf) }) { Text("执行") }
+                                OutlinedButton(onClick = { onPin(wf) }) { Text("加到桌面") }
                             }
                         }
                     }
@@ -541,14 +556,32 @@ private fun WorkflowListScreen(
             }
 
             if (status.isNotBlank()) {
-                Text(status, style = MaterialTheme.typography.bodySmall)
+                item {
+                    StatusBanner(status)
+                }
             }
 
-            Divider()
-            Text("执行日志", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            LazyColumn(modifier = Modifier.height(180.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                items(logs) { line ->
-                    Text(line, style = MaterialTheme.typography.bodySmall)
+            item {
+                SectionHeader("执行日志")
+            }
+
+            item {
+                OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier
+                            .padding(12.dp)
+                            .heightIn(min = 120.dp, max = 240.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        if (logs.isEmpty()) {
+                            Text("暂无日志", style = MaterialTheme.typography.bodySmall)
+                        } else {
+                            logs.forEach { line ->
+                                Text(line, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -577,184 +610,212 @@ private fun CreateWorkflowScreen(
 
     val scroll = rememberScrollState()
 
-    Scaffold(modifier = Modifier.fillMaxSize()) { padding ->
+    Scaffold(
+        modifier = Modifier.fillMaxSize(),
+        topBar = {
+            TopAppBar(
+                title = { Text("创建工作流") },
+                navigationIcon = { TextButton(onClick = onBack) { Text("返回") } }
+            )
+        }
+    ) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
                 .padding(12.dp)
                 .verticalScroll(scroll),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = onBack) { Text("返回") }
-                Text("创建工作流", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            }
-
-            OutlinedTextField(
-                value = workflowName,
-                onValueChange = { workflowName = it },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("工作流名称") }
-            )
-
-            Text("选择原子操作类型")
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OperationType.entries.forEach { type ->
-                    OutlinedButton(onClick = { selectedType = type }) {
-                        Text(if (selectedType == type) "* ${type.title}" else type.title)
-                    }
+            SectionHeader("基本信息")
+            OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = workflowName,
+                        onValueChange = { workflowName = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("工作流名称") }
+                    )
                 }
             }
 
-            when (selectedType) {
-                OperationType.DELETE -> {
-                    OutlinedTextField(
-                        value = deletePath,
-                        onValueChange = { deletePath = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("要删除的目录绝对路径") }
-                    )
-                }
-
-                OperationType.COPY -> {
-                    OutlinedTextField(
-                        value = copySource,
-                        onValueChange = { copySource = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("源目录绝对路径") }
-                    )
-                    OutlinedTextField(
-                        value = copyTarget,
-                        onValueChange = { copyTarget = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("目标目录绝对路径") }
-                    )
-                }
-
-                OperationType.SET_TIME -> {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Checkbox(
-                            checked = autoTime,
-                            onCheckedChange = { autoTime = it },
-                            modifier = Modifier.size(24.dp)
-                        )
-                        Text("自动设置系统时间")
-                    }
-                    if (!autoTime) {
-                        OutlinedTextField(
-                            value = manualEpoch,
-                            onValueChange = { manualEpoch = it },
-                            modifier = Modifier.fillMaxWidth(),
-                            label = { Text("目标时间 epochMillis (毫秒)") }
-                        )
-                    }
-                }
-
-                OperationType.OPEN_APP -> {
-                    OutlinedTextField(
-                        value = appNameQuery,
-                        onValueChange = { appNameQuery = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("按应用名搜索（如 微信）") }
-                    )
-                    val filteredApps = remember(appNameQuery, installedApps) {
-                        val q = appNameQuery.trim()
-                        if (q.isBlank()) {
-                            installedApps.take(8)
-                        } else {
-                            installedApps.filter { it.appName.contains(q, ignoreCase = true) }.take(8)
+            SectionHeader("原子操作")
+            OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("选择操作类型", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OperationType.entries.forEach { type ->
+                            if (selectedType == type) {
+                                Button(onClick = { selectedType = type }) { Text(type.title) }
+                            } else {
+                                OutlinedButton(onClick = { selectedType = type }) { Text(type.title) }
+                            }
                         }
                     }
-                    if (filteredApps.isNotEmpty()) {
-                        Card(modifier = Modifier.fillMaxWidth()) {
-                            Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                filteredApps.forEach { app ->
-                                    TextButton(
-                                        onClick = {
-                                            packageName = app.packageName
-                                            appNameQuery = app.appName
-                                            status = "已选择应用: ${app.appName}"
-                                        },
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Text("${app.appName} (${app.packageName})")
+
+                    Divider()
+
+                    when (selectedType) {
+                        OperationType.DELETE -> {
+                            OutlinedTextField(
+                                value = deletePath,
+                                onValueChange = { deletePath = it },
+                                modifier = Modifier.fillMaxWidth(),
+                                label = { Text("要删除的目录绝对路径") }
+                            )
+                        }
+
+                        OperationType.COPY -> {
+                            OutlinedTextField(
+                                value = copySource,
+                                onValueChange = { copySource = it },
+                                modifier = Modifier.fillMaxWidth(),
+                                label = { Text("源目录绝对路径") }
+                            )
+                            OutlinedTextField(
+                                value = copyTarget,
+                                onValueChange = { copyTarget = it },
+                                modifier = Modifier.fillMaxWidth(),
+                                label = { Text("目标目录绝对路径") }
+                            )
+                        }
+
+                        OperationType.SET_TIME -> {
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Checkbox(
+                                    checked = autoTime,
+                                    onCheckedChange = { autoTime = it },
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Text("自动设置系统时间")
+                            }
+                            if (!autoTime) {
+                                OutlinedTextField(
+                                    value = manualEpoch,
+                                    onValueChange = { manualEpoch = it },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    label = { Text("目标时间 epochMillis (毫秒)") }
+                                )
+                            }
+                        }
+
+                        OperationType.OPEN_APP -> {
+                            OutlinedTextField(
+                                value = appNameQuery,
+                                onValueChange = { appNameQuery = it },
+                                modifier = Modifier.fillMaxWidth(),
+                                label = { Text("按应用名搜索（如 微信）") }
+                            )
+                            val filteredApps = remember(appNameQuery, installedApps) {
+                                val q = appNameQuery.trim()
+                                if (q.isBlank()) {
+                                    installedApps.take(6)
+                                } else {
+                                    installedApps.filter { it.appName.contains(q, ignoreCase = true) }.take(6)
+                                }
+                            }
+                            if (filteredApps.isNotEmpty()) {
+                                OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                                    Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                        filteredApps.forEach { app ->
+                                            TextButton(
+                                                onClick = {
+                                                    packageName = app.packageName
+                                                    appNameQuery = app.appName
+                                                    status = "已选择应用: ${app.appName}"
+                                                },
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Text("${app.appName} (${app.packageName})")
+                                            }
+                                        }
                                     }
                                 }
                             }
-                        }
-                    }
-                    OutlinedTextField(
-                        value = packageName,
-                        onValueChange = { packageName = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("App 包名（如 com.android.settings）") }
-                    )
-                }
-            }
-
-            Button(onClick = {
-                val op = when (selectedType) {
-                    OperationType.DELETE -> {
-                        if (deletePath.isBlank()) {
-                            status = "请输入删除目录路径"
-                            null
-                        } else {
-                            DeleteFolderOperation(deletePath)
+                            OutlinedTextField(
+                                value = packageName,
+                                onValueChange = { packageName = it },
+                                modifier = Modifier.fillMaxWidth(),
+                                label = { Text("App 包名（如 com.android.settings）") }
+                            )
                         }
                     }
 
-                    OperationType.COPY -> {
-                        if (copySource.isBlank() || copyTarget.isBlank()) {
-                            status = "请输入复制源路径和目标路径"
-                            null
-                        } else {
-                            CopyFolderOperation(copySource, copyTarget)
-                        }
-                    }
+                    Button(onClick = {
+                        val op = when (selectedType) {
+                            OperationType.DELETE -> {
+                                if (deletePath.isBlank()) {
+                                    status = "请输入删除目录路径"
+                                    null
+                                } else {
+                                    DeleteFolderOperation(deletePath)
+                                }
+                            }
 
-                    OperationType.SET_TIME -> {
-                        if (autoTime) {
-                            SetSystemTimeOperation(auto = true)
-                        } else {
-                            val ms = manualEpoch.toLongOrNull()
-                            if (ms == null) {
-                                status = "epochMillis 必须是数字"
-                                null
-                            } else {
-                                SetSystemTimeOperation(auto = false, epochMillis = ms)
+                            OperationType.COPY -> {
+                                if (copySource.isBlank() || copyTarget.isBlank()) {
+                                    status = "请输入复制源路径和目标路径"
+                                    null
+                                } else {
+                                    CopyFolderOperation(copySource, copyTarget)
+                                }
+                            }
+
+                            OperationType.SET_TIME -> {
+                                if (autoTime) {
+                                    SetSystemTimeOperation(auto = true)
+                                } else {
+                                    val ms = manualEpoch.toLongOrNull()
+                                    if (ms == null) {
+                                        status = "epochMillis 必须是数字"
+                                        null
+                                    } else {
+                                        SetSystemTimeOperation(auto = false, epochMillis = ms)
+                                    }
+                                }
+                            }
+
+                            OperationType.OPEN_APP -> {
+                                if (packageName.isBlank()) {
+                                    status = "请输入包名"
+                                    null
+                                } else {
+                                    OpenAppOperation(packageName)
+                                }
                             }
                         }
-                    }
 
-                    OperationType.OPEN_APP -> {
-                        if (packageName.isBlank()) {
-                            status = "请输入包名"
-                            null
-                        } else {
-                            OpenAppOperation(packageName)
+                        if (op != null) {
+                            operations.add(op)
+                            status = "已添加操作: ${op.displayText()}"
                         }
+                    }) {
+                        Text("添加操作")
                     }
                 }
-
-                if (op != null) {
-                    operations.add(op)
-                    status = "已添加操作: ${op.displayText()}"
-                }
-            }) {
-                Text("添加操作")
             }
 
             if (operations.isNotEmpty()) {
-                Text("当前操作列表", fontWeight = FontWeight.Bold)
-                operations.forEachIndexed { index, operation ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("${index + 1}. ${operation.displayText()}", modifier = Modifier.width(280.dp))
-                        TextButton(onClick = { operations.removeAt(index) }) {
-                            Text("删除")
+                SectionHeader("当前操作列表")
+                OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        operations.forEachIndexed { index, operation ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    "${index + 1}. ${operation.displayText()}",
+                                    modifier = Modifier.weight(1f),
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                TextButton(onClick = { operations.removeAt(index) }) {
+                                    Text("删除")
+                                }
+                            }
                         }
                     }
                 }
@@ -774,13 +835,31 @@ private fun CreateWorkflowScreen(
             }
 
             if (status.isNotBlank()) {
-                Text(status)
+                StatusBanner(status)
             }
 
-            Text(
-                "说明: 修改系统时间属于高权限行为。普通 App 通常只能跳转到系统日期设置页，Root/设备所有者模式下可自动执行。",
-                style = MaterialTheme.typography.bodySmall
-            )
+            OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text(
+                        "说明: 修改系统时间属于高权限行为。普通 App 通常只能跳转到系统日期设置页，Root/设备所有者模式下可自动执行。",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SectionHeader(text: String) {
+    Text(text, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+}
+
+@Composable
+private fun StatusBanner(text: String) {
+    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(text, style = MaterialTheme.typography.bodySmall)
         }
     }
 }
