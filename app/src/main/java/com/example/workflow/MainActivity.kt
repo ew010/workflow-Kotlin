@@ -2,6 +2,10 @@ package com.example.workflow
 
 import android.app.Application
 import android.content.Intent
+import android.content.pm.ShortcutInfo
+import android.content.pm.ShortcutManager
+import android.graphics.drawable.Icon
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -29,12 +33,14 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -57,6 +63,9 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 
+private const val ACTION_RUN_WORKFLOW_SHORTCUT = "com.example.workflow.action.RUN_WORKFLOW_SHORTCUT"
+private const val EXTRA_WORKFLOW_ID = "workflow_id"
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -66,6 +75,11 @@ class MainActivity : ComponentActivity() {
                 WorkflowApp(vm)
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
     }
 }
 
@@ -342,6 +356,46 @@ class WorkflowViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun runWorkflowById(workflowId: String): Boolean {
+        val target = _workflows.value.firstOrNull { it.id == workflowId } ?: return false
+        runWorkflow(target)
+        return true
+    }
+
+    fun pinWorkflowShortcut(workflow: Workflow, onDone: (Boolean, String) -> Unit) {
+        val app = getApplication<Application>()
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            onDone(false, "当前系统版本不支持固定桌面快捷方式")
+            return
+        }
+
+        val shortcutManager = app.getSystemService(ShortcutManager::class.java)
+        if (shortcutManager == null || !shortcutManager.isRequestPinShortcutSupported) {
+            onDone(false, "当前桌面启动器不支持添加快捷方式")
+            return
+        }
+
+        val launchIntent = Intent(app, MainActivity::class.java).apply {
+            action = ACTION_RUN_WORKFLOW_SHORTCUT
+            putExtra(EXTRA_WORKFLOW_ID, workflow.id)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        }
+
+        val shortcut = ShortcutInfo.Builder(app, "workflow_${workflow.id}")
+            .setShortLabel(workflow.name.take(20))
+            .setLongLabel("执行工作流: ${workflow.name}")
+            .setIcon(Icon.createWithResource(app, android.R.drawable.ic_media_play))
+            .setIntent(launchIntent)
+            .build()
+
+        val accepted = shortcutManager.requestPinShortcut(shortcut, null)
+        if (accepted) {
+            onDone(true, "已请求添加到桌面，请在系统提示中确认")
+        } else {
+            onDone(false, "添加到桌面失败")
+        }
+    }
+
     private fun appendLog(text: String) {
         _logs.value = (_logs.value + text).takeLast(100)
     }
@@ -358,8 +412,26 @@ enum class OperationType(val title: String) {
 private fun WorkflowApp(vm: WorkflowViewModel) {
     val workflows by vm.workflows.collectAsState()
     val logs by vm.logs.collectAsState()
+    val context = LocalContext.current
+    val activity = context as? ComponentActivity
 
     var creatorMode by remember { mutableStateOf(false) }
+    var handledShortcutSignature by remember { mutableStateOf<String?>(null) }
+    var listStatus by remember { mutableStateOf("") }
+
+    LaunchedEffect(workflows.size, activity?.intent?.action, activity?.intent?.getStringExtra(EXTRA_WORKFLOW_ID)) {
+        val intent = activity?.intent ?: return@LaunchedEffect
+        if (intent.action != ACTION_RUN_WORKFLOW_SHORTCUT) return@LaunchedEffect
+        val workflowId = intent.getStringExtra(EXTRA_WORKFLOW_ID) ?: return@LaunchedEffect
+        if (workflowId.isBlank()) return@LaunchedEffect
+        if (workflows.isEmpty()) return@LaunchedEffect
+        val signature = "${intent.action}:$workflowId"
+        if (handledShortcutSignature == signature) return@LaunchedEffect
+
+        val ok = vm.runWorkflowById(workflowId)
+        listStatus = if (ok) "已通过桌面快捷方式执行工作流" else "快捷方式对应的工作流不存在"
+        handledShortcutSignature = signature
+    }
 
     if (creatorMode) {
         CreateWorkflowScreen(
@@ -375,8 +447,14 @@ private fun WorkflowApp(vm: WorkflowViewModel) {
         WorkflowListScreen(
             workflows = workflows,
             logs = logs,
+            status = listStatus,
             onRefresh = vm::refresh,
             onRun = vm::runWorkflow,
+            onPin = { workflow ->
+                vm.pinWorkflowShortcut(workflow) { _, message ->
+                    listStatus = message
+                }
+            },
             onCreate = { creatorMode = true }
         )
     }
@@ -386,8 +464,10 @@ private fun WorkflowApp(vm: WorkflowViewModel) {
 private fun WorkflowListScreen(
     workflows: List<Workflow>,
     logs: List<String>,
+    status: String,
     onRefresh: () -> Unit,
     onRun: (Workflow) -> Unit,
+    onPin: (Workflow) -> Unit,
     onCreate: () -> Unit
 ) {
     Scaffold(modifier = Modifier.fillMaxSize()) { padding ->
@@ -420,11 +500,18 @@ private fun WorkflowListScreen(
                                     Button(onClick = { onRun(wf) }) {
                                         Text("执行")
                                     }
+                                    OutlinedButton(onClick = { onPin(wf) }) {
+                                        Text("加到桌面")
+                                    }
                                 }
                             }
                         }
                     }
                 }
+            }
+
+            if (status.isNotBlank()) {
+                Text(status, style = MaterialTheme.typography.bodySmall)
             }
 
             Divider()
